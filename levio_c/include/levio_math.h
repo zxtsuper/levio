@@ -1,0 +1,101 @@
+/**
+ * @file levio_math.h
+ * @brief Small fixed-size linear algebra helpers for LEVIO embedded VIO.
+ *
+ * All routines operate on stack-allocated arrays to avoid dynamic memory
+ * allocation (paper §3.4 embedded constraints).
+ *
+ * Naming convention:
+ *   levio_mat3_*   – 3×3 float matrices
+ *   levio_vec3_*   – 3-element float vectors
+ *   levio_matN_*   – generic NxN routines (N passed as parameter)
+ */
+#ifndef LEVIO_MATH_H
+#define LEVIO_MATH_H
+
+#include <stddef.h>
+#include "levio_types.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* --------------------------------------------------------------------------
+ * vec3 operations
+ * -------------------------------------------------------------------------- */
+vec3f_t levio_vec3_add(vec3f_t a, vec3f_t b);
+vec3f_t levio_vec3_sub(vec3f_t a, vec3f_t b);
+vec3f_t levio_vec3_scale(vec3f_t v, float s);
+float   levio_vec3_dot(vec3f_t a, vec3f_t b);
+vec3f_t levio_vec3_cross(vec3f_t a, vec3f_t b);
+float   levio_vec3_norm(vec3f_t v);
+vec3f_t levio_vec3_normalize(vec3f_t v);
+
+/* --------------------------------------------------------------------------
+ * mat3 operations (row-major, 9 floats)
+ * -------------------------------------------------------------------------- */
+mat3f_t levio_mat3_identity(void);
+mat3f_t levio_mat3_mul(mat3f_t a, mat3f_t b);
+mat3f_t levio_mat3_transpose(mat3f_t m);
+vec3f_t levio_mat3_mul_vec3(mat3f_t m, vec3f_t v);
+
+/** Determinant of 3×3 matrix */
+float   levio_mat3_det(mat3f_t m);
+
+/** Inverse of 3×3 matrix (returns identity on singular input) */
+mat3f_t levio_mat3_inv(mat3f_t m);
+
+/** Skew-symmetric matrix from 3-vector: [v]× */
+mat3f_t levio_mat3_skew(vec3f_t v);
+
+/* --------------------------------------------------------------------------
+ * Generic NxN dense routines (used for preintegration covariance, Schur)
+ * All matrices stored row-major in caller-provided float arrays.
+ * -------------------------------------------------------------------------- */
+
+/**
+ * @brief In-place Cholesky decomposition L of A (A = L L^T).
+ * @param A     [in/out] symmetric positive-definite n×n matrix → lower L
+ * @param n     matrix dimension
+ * @return 0 on success, -1 if not positive-definite
+ */
+int levio_chol(float *A, int n);
+
+/**
+ * @brief Solve L x = b in-place (lower triangular forward substitution).
+ * @param L   n×n lower triangular matrix
+ * @param b   [in/out] right-hand side → solution x
+ * @param n   dimension
+ */
+void levio_fwd_sub(const float *L, float *b, int n);
+
+/**
+ * @brief Solve L^T x = b in-place (back substitution).
+ */
+void levio_back_sub(const float *L, float *b, int n);
+
+/**
+ * @brief Solve A x = b via Cholesky (A must be SPD).
+ *        Modifies A in place.
+ * @return 0 on success, -1 on failure
+ */
+int levio_solve_chol(float *A, float *b, int n);
+
+/**
+ * @brief Matrix multiply C = A * B.
+ * @param A   m×k row-major
+ * @param B   k×n row-major
+ * @param C   m×n row-major output (must not alias A or B)
+ */
+void levio_matmul(const float *A, const float *B, float *C, int m, int k, int n);
+
+/**
+ * @brief Add scaled matrix: C += s * A.
+ */
+void levio_matadd_scaled(float *C, const float *A, float s, int m, int n);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* LEVIO_MATH_H */
