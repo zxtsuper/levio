@@ -15,6 +15,14 @@
 #include <string.h>
 #include <math.h>
 #include <assert.h>
+#include <errno.h>
+#include <stdlib.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <limits.h>
+#include <unistd.h>
+
+#include <zlib.h>
 
 #include "levio_cfg.h"
 #include "levio_types.h"
@@ -24,6 +32,7 @@
 #include "levio_se3.h"
 #include "levio_camera.h"
 #include "levio_match.h"
+#include "euroc_dataset.h"
 
 /* --------------------------------------------------------------------------
  * Helpers
@@ -310,6 +319,244 @@ static int test_match_no_match(void)
 }
 
 /* --------------------------------------------------------------------------
+ * Test 7: EuRoC dataset helpers
+ * -------------------------------------------------------------------------- */
+static int test_mkdir_p(const char *path)
+{
+    if (mkdir(path, 0755) == 0 || errno == EEXIST)
+        return 0;
+    return -1;
+}
+
+static int test_write_file(const char *path, const void *data, size_t size)
+{
+    FILE *fp = fopen(path, "wb");
+    if (fp == NULL)
+        return -1;
+    if (fwrite(data, 1, size, fp) != size) {
+        fclose(fp);
+        return -1;
+    }
+    fclose(fp);
+    return 0;
+}
+
+static int test_join_path(char *dst, size_t dst_size,
+                          const char *a, const char *b)
+{
+    int n = snprintf(dst, dst_size, "%s/%s", a, b);
+    return (n > 0 && (size_t)n < dst_size) ? 0 : -1;
+}
+
+static void write_be32(uint8_t *dst, uint32_t v)
+{
+    dst[0] = (uint8_t)(v >> 24);
+    dst[1] = (uint8_t)(v >> 16);
+    dst[2] = (uint8_t)(v >> 8);
+    dst[3] = (uint8_t)v;
+}
+
+static int append_png_chunk(uint8_t **buf, size_t *size,
+                            const char type[4],
+                            const uint8_t *data, uint32_t data_size)
+{
+    size_t old_size = *size;
+    size_t new_size = old_size + 12u + (size_t)data_size;
+    uint8_t *tmp = (uint8_t *)realloc(*buf, new_size);
+    uint32_t crc;
+
+    if (tmp == NULL)
+        return -1;
+    *buf = tmp;
+
+    write_be32(tmp + old_size, data_size);
+    memcpy(tmp + old_size + 4u, type, 4);
+    if (data_size > 0)
+        memcpy(tmp + old_size + 8u, data, data_size);
+
+    crc = crc32(0L, Z_NULL, 0);
+    crc = crc32(crc, (const Bytef *)(tmp + old_size + 4u), 4u + data_size);
+    write_be32(tmp + old_size + 8u + data_size, crc);
+    *size = new_size;
+    return 0;
+}
+
+static int test_write_gray_png(const char *path, int w, int h, const uint8_t *pixels)
+{
+    static const uint8_t sig[8] = {
+        0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n'
+    };
+    uint8_t ihdr[13];
+    uint8_t *raw = NULL;
+    uint8_t *compressed = NULL;
+    uint8_t *png = NULL;
+    size_t png_size = 0;
+    uLongf compressed_size;
+    int y;
+
+    raw = (uint8_t *)malloc((size_t)(w + 1) * (size_t)h);
+    if (raw == NULL)
+        return -1;
+
+    for (y = 0; y < h; ++y) {
+        raw[y * (w + 1)] = 0;
+        memcpy(raw + y * (w + 1) + 1, pixels + y * w, (size_t)w);
+    }
+
+    compressed_size = compressBound((uLong)((size_t)(w + 1) * (size_t)h));
+    compressed = (uint8_t *)malloc((size_t)compressed_size);
+    if (compressed == NULL) {
+        free(raw);
+        return -1;
+    }
+
+    if (compress2(compressed, &compressed_size, raw,
+                  (uLong)((size_t)(w + 1) * (size_t)h), Z_BEST_SPEED) != Z_OK) {
+        free(raw);
+        free(compressed);
+        return -1;
+    }
+
+    png = (uint8_t *)malloc(sizeof(sig));
+    if (png == NULL) {
+        free(raw);
+        free(compressed);
+        return -1;
+    }
+    memcpy(png, sig, sizeof(sig));
+    png_size = sizeof(sig);
+
+    write_be32(ihdr + 0, (uint32_t)w);
+    write_be32(ihdr + 4, (uint32_t)h);
+    ihdr[8] = 8;  /* bit depth */
+    ihdr[9] = 0;  /* grayscale */
+    ihdr[10] = 0; /* compression */
+    ihdr[11] = 0; /* filter */
+    ihdr[12] = 0; /* interlace */
+
+    if (append_png_chunk(&png, &png_size, "IHDR", ihdr, sizeof(ihdr)) != 0 ||
+        append_png_chunk(&png, &png_size, "IDAT", compressed,
+                         (uint32_t)compressed_size) != 0 ||
+        append_png_chunk(&png, &png_size, "IEND", NULL, 0) != 0 ||
+        test_write_file(path, png, png_size) != 0) {
+        free(raw);
+        free(compressed);
+        free(png);
+        return -1;
+    }
+
+    free(raw);
+    free(compressed);
+    free(png);
+    return 0;
+}
+
+static int test_prepare_euroc_fixture(char *root, size_t root_size)
+{
+    char mav0[512], imu0[512], cam0[512], cam_data[512];
+    char imu_csv[512], cam_csv[512], image_path[512];
+    char template_buf[PATH_MAX];
+    static const char imu_data[] =
+        "#timestamp [ns],w_RS_S_x [rad s^-1],w_RS_S_y [rad s^-1],w_RS_S_z [rad s^-1],a_RS_S_x [m s^-2],a_RS_S_y [m s^-2],a_RS_S_z [m s^-2]\n"
+        "1000000000,0.1,0.2,0.3,1.0,2.0,3.0\n"
+        "1050000000,0.4,0.5,0.6,4.0,5.0,6.0\n";
+    static const char cam_data_csv[] =
+        "#timestamp [ns],filename\n"
+        "1020000000,1000000000.png\n";
+    static const uint8_t pixels[16] = {
+         1,  2,  3,  4,
+         5,  6,  7,  8,
+         9, 10, 11, 12,
+        13, 14, 15, 16
+    };
+
+    if (snprintf(template_buf, sizeof(template_buf),
+                 "/tmp/levio_euroc_fixture_XXXXXX") >= (int)sizeof(template_buf))
+        return -1;
+    if (mkdtemp(template_buf) == NULL)
+        return -1;
+    if (snprintf(root, root_size, "%s", template_buf) >= (int)root_size)
+        return -1;
+
+    EXPECT(test_join_path(mav0, sizeof(mav0), root, "mav0") == 0,
+           "build mav0 path");
+    EXPECT(test_join_path(imu0, sizeof(imu0), mav0, "imu0") == 0,
+           "build imu path");
+    EXPECT(test_join_path(cam0, sizeof(cam0), mav0, "cam0") == 0,
+           "build cam path");
+    EXPECT(test_join_path(cam_data, sizeof(cam_data), cam0, "data") == 0,
+           "build cam data path");
+    if (test_mkdir_p(mav0) != 0 || test_mkdir_p(imu0) != 0 ||
+        test_mkdir_p(cam0) != 0 || test_mkdir_p(cam_data) != 0)
+        return -1;
+
+    EXPECT(test_join_path(imu_csv, sizeof(imu_csv), imu0, "data.csv") == 0,
+           "build imu csv path");
+    EXPECT(test_join_path(cam_csv, sizeof(cam_csv), cam0, "data.csv") == 0,
+           "build cam csv path");
+    EXPECT(test_join_path(image_path, sizeof(image_path), cam_data,
+                          "1000000000.png") == 0,
+           "build image path");
+    if (test_write_file(imu_csv, imu_data, sizeof(imu_data) - 1u) != 0 ||
+        test_write_file(cam_csv, cam_data_csv, sizeof(cam_data_csv) - 1u) != 0 ||
+        test_write_gray_png(image_path, 4, 4, pixels) != 0)
+        return -1;
+
+    return 0;
+}
+
+static int test_euroc_readers_and_image(void)
+{
+    char root[512];
+    char resolved[LEVIO_EUROC_PATH_MAX];
+    uint8_t img[4];
+    levio_euroc_imu_reader_t imu_reader;
+    levio_euroc_cam_reader_t cam_reader;
+    levio_euroc_imu_sample_t imu;
+    levio_euroc_cam_sample_t cam;
+    int src_w = 0, src_h = 0;
+
+    memset(&imu_reader, 0, sizeof(imu_reader));
+    memset(&cam_reader, 0, sizeof(cam_reader));
+
+    EXPECT(test_prepare_euroc_fixture(root, sizeof(root)) == 0,
+           "prepare EuRoC fixture");
+    EXPECT(levio_euroc_resolve_mav0_root(root, resolved, sizeof(resolved)) == 0,
+           "resolve sequence root to mav0");
+    EXPECT(strstr(resolved, "/mav0") != NULL, "resolved path ends with mav0");
+
+    EXPECT(levio_euroc_open_imu_reader(&imu_reader, root) == 0,
+           "open IMU reader");
+    EXPECT(levio_euroc_open_cam_reader(&cam_reader, root) == 0,
+           "open camera reader");
+
+    EXPECT(levio_euroc_read_next_imu(&imu_reader, &imu) == 1,
+           "read first IMU sample");
+    EXPECT_NEAR(imu.t, 1.0, 1e-9, "IMU timestamp converted to seconds");
+    EXPECT_NEAR(imu.gz, 0.3f, 1e-6f, "IMU gyro z parsed");
+    EXPECT_NEAR(imu.az, 3.0f, 1e-6f, "IMU accel z parsed");
+
+    EXPECT(levio_euroc_read_next_cam(&cam_reader, &cam) == 1,
+           "read first camera sample");
+    EXPECT_NEAR(cam.t, 1.02, 1e-9, "camera timestamp converted to seconds");
+    EXPECT(strstr(cam.image_path, "1000000000.png") != NULL,
+           "camera image path resolved");
+
+    EXPECT(levio_euroc_load_image_gray(cam.image_path, img, 2, 2,
+                                       &src_w, &src_h) == 0,
+           "load and scale grayscale PNG");
+    EXPECT(src_w == 4 && src_h == 4, "source image size preserved");
+    EXPECT(img[0] == 1, "scaled pixel [0,0]");
+    EXPECT(img[1] == 3, "scaled pixel [0,1]");
+    EXPECT(img[2] == 9, "scaled pixel [1,0]");
+    EXPECT(img[3] == 11, "scaled pixel [1,1]");
+
+    levio_euroc_close_imu_reader(&imu_reader);
+    levio_euroc_close_cam_reader(&cam_reader);
+    return 0;
+}
+
+/* --------------------------------------------------------------------------
  * Main
  * -------------------------------------------------------------------------- */
 int main(void)
@@ -343,6 +590,9 @@ int main(void)
     printf("Matcher:\n");
     RUN_TEST(test_match_self);
     RUN_TEST(test_match_no_match);
+
+    printf("EuRoC dataset:\n");
+    RUN_TEST(test_euroc_readers_and_image);
 
     printf("\n=== Results: %d passed, %d failed ===\n", g_pass, g_fail);
     return (g_fail == 0) ? 0 : 1;
