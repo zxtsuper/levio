@@ -1,1 +1,0 @@
-/usr/bin/cc -g -Wl,--dependency-file=CMakeFiles/levio_tests.dir/link.d CMakeFiles/levio_tests.dir/tests/test_levio.c.o -o levio_tests  liblevio.a -lm

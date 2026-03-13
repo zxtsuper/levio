@@ -9,6 +9,10 @@
  *   4) SO3 exp / log round-trip
  *   5) Camera projection / unprojection round-trip
  *   6) Bidirectional matcher
+ *   7) SVD and Jacobi eigendecomposition
+ *   8) Triangulation (midpoint)
+ *   9) 8-point essential matrix + RANSAC
+ *  10) EPnP + RANSAC
  */
 #include <stdio.h>
 #include <stdint.h>
@@ -24,6 +28,9 @@
 #include "levio_se3.h"
 #include "levio_camera.h"
 #include "levio_match.h"
+#include "levio_triangulate.h"
+#include "levio_ransac_8pt.h"
+#include "levio_pnp_epnp.h"
 
 /* --------------------------------------------------------------------------
  * Helpers
@@ -310,6 +317,213 @@ static int test_match_no_match(void)
 }
 
 /* --------------------------------------------------------------------------
+ * Test 7: SVD and Jacobi eigendecomposition
+ * -------------------------------------------------------------------------- */
+static int test_svd3_identity(void)
+{
+    /* SVD of identity: U=I, s=[1,1,1], Vt=I */
+    float A[9] = {1,0,0, 0,1,0, 0,0,1};
+    float U[9], s[3], Vt[9];
+    levio_svd3(A, U, s, Vt);
+    EXPECT_NEAR(s[0], 1.0f, 1e-5f, "svd3 identity: s[0]");
+    EXPECT_NEAR(s[1], 1.0f, 1e-5f, "svd3 identity: s[1]");
+    EXPECT_NEAR(s[2], 1.0f, 1e-5f, "svd3 identity: s[2]");
+    /* U * diag(s) * Vt should equal A */
+    float A_rec[9];
+    int i, j, k;
+    for (i = 0; i < 3; ++i)
+        for (j = 0; j < 3; ++j) {
+            float v = 0.0f;
+            for (k = 0; k < 3; ++k)
+                v += U[i*3+k] * s[k] * Vt[k*3+j];
+            A_rec[i*3+j] = v;
+        }
+    for (i = 0; i < 9; ++i)
+        EXPECT_NEAR(A_rec[i], A[i], 1e-4f, "svd3 identity: reconstruction");
+    return 0;
+}
+
+static int test_svd3_reconstruct(void)
+{
+    /* Random 3×3 matrix */
+    float A[9] = {4,2,-1, 3,6, 2, -1, 2, 5};
+    float U[9], s[3], Vt[9];
+    levio_svd3(A, U, s, Vt);
+
+    /* Check singular values are non-negative and sorted */
+    EXPECT(s[0] >= s[1] - 1e-5f, "svd3: s sorted desc 0>=1");
+    EXPECT(s[1] >= s[2] - 1e-5f, "svd3: s sorted desc 1>=2");
+    EXPECT(s[2] >= -1e-6f, "svd3: s[2] non-negative");
+
+    /* Reconstruct A = U * diag(s) * Vt */
+    int i, j, k;
+    float A_rec[9];
+    for (i = 0; i < 3; ++i)
+        for (j = 0; j < 3; ++j) {
+            float v = 0.0f;
+            for (k = 0; k < 3; ++k)
+                v += U[i*3+k] * s[k] * Vt[k*3+j];
+            A_rec[i*3+j] = v;
+        }
+    for (i = 0; i < 9; ++i)
+        EXPECT_NEAR(A_rec[i], A[i], 1e-3f, "svd3: reconstruction");
+    return 0;
+}
+
+static int test_sym_eig_3x3(void)
+{
+    /* Symmetric matrix with known eigenvalues */
+    float A[9] = {2,1,0, 1,3,1, 0,1,2};
+    float V[9];
+    levio_sym_eig(A, V, 3);
+    /* Eigenvalues are on diagonal of A after decomposition */
+    /* V^T * V should be identity (orthonormal) */
+    int i, j, k;
+    float VtV[9];
+    for (i = 0; i < 3; ++i)
+        for (j = 0; j < 3; ++j) {
+            float s = 0.0f;
+            for (k = 0; k < 3; ++k)
+                s += V[k*3+i] * V[k*3+j];
+            VtV[i*3+j] = s;
+        }
+    EXPECT_NEAR(VtV[0], 1.0f, 1e-5f, "eig: V orthonormal [0,0]");
+    EXPECT_NEAR(VtV[4], 1.0f, 1e-5f, "eig: V orthonormal [1,1]");
+    EXPECT_NEAR(VtV[8], 1.0f, 1e-5f, "eig: V orthonormal [2,2]");
+    EXPECT_NEAR(VtV[1], 0.0f, 1e-5f, "eig: V orthonormal [0,1]");
+    return 0;
+}
+
+/* --------------------------------------------------------------------------
+ * Test 8: Triangulation
+ * -------------------------------------------------------------------------- */
+static int test_triangulate_frontal(void)
+{
+    /* Two cameras looking at a point at (1, 0, 5) in world.
+     * Camera 1: R=I, t=(0,0,0)  (identity)
+     * Camera 2: R=I, t=(-1,0,0) (translated 1m to the right) */
+    levio_K_t K = {100.0f, 100.0f, 80.0f, 60.0f};
+
+    float R1[9] = {1,0,0, 0,1,0, 0,0,1};
+    vec3f_t t1 = {0.0f, 0.0f, 0.0f};
+
+    float R2[9] = {1,0,0, 0,1,0, 0,0,1};
+    vec3f_t t2 = {-1.0f, 0.0f, 0.0f};
+
+    /* Project (1,0,5) into both cameras */
+    vec3f_t Pw = {1.0f, 0.0f, 5.0f};
+
+    /* In cam1: Pc1 = R1*Pw + t1 = (1,0,5), proj1 = (100+80, 0+60) = (180,60) */
+    vec2f_t px1;
+    px1.x = K.fx * Pw.x / Pw.z + K.cx;  /* 100 * 1/5 + 80 = 100 */
+    px1.y = K.fy * Pw.y / Pw.z + K.cy;  /* 100 * 0/5 + 60 = 60 */
+
+    /* In cam2: Pc2 = R2*Pw + t2 = (0,0,5), proj2 = (80,60) */
+    vec3f_t Pc2;
+    Pc2.x = Pw.x + t2.x; Pc2.y = Pw.y + t2.y; Pc2.z = Pw.z + t2.z;
+    vec2f_t px2;
+    px2.x = K.fx * Pc2.x / Pc2.z + K.cx;  /* 100 * 0/5 + 80 = 80 */
+    px2.y = K.fy * Pc2.y / Pc2.z + K.cy;  /* 100 * 0/5 + 60 = 60 */
+
+    vec3f_t Pw_out;
+    int ret = levio_triangulate_dlt(R1, t1, R2, t2, &K, px1, px2, &Pw_out);
+    EXPECT(ret == 0, "triangulate_dlt succeeded");
+    EXPECT_NEAR(Pw_out.x, 1.0f, 0.1f, "triangulate Pw.x");
+    EXPECT_NEAR(Pw_out.y, 0.0f, 0.1f, "triangulate Pw.y");
+    EXPECT_NEAR(Pw_out.z, 5.0f, 0.5f, "triangulate Pw.z");
+    return 0;
+}
+
+static int test_triangulate_parallel_rays(void)
+{
+    /* Same pixel in both cams with same pose → parallel rays → should fail */
+    levio_K_t K = {100.0f, 100.0f, 80.0f, 60.0f};
+    float R[9] = {1,0,0, 0,1,0, 0,0,1};
+    vec3f_t t = {0.0f, 0.0f, 0.0f};
+    vec2f_t px = {80.0f, 60.0f};
+    vec3f_t Pw;
+    int ret = levio_triangulate_dlt(R, t, R, t, &K, px, px, &Pw);
+    EXPECT(ret == -1, "parallel rays → -1");
+    return 0;
+}
+
+/* --------------------------------------------------------------------------
+ * Test 9: 8-point essential matrix + RANSAC
+ * -------------------------------------------------------------------------- */
+static int test_ransac_8pt_known_motion(void)
+{
+    /* Synthetic test: camera translating 0.5m right, looking at 20 points */
+    levio_K_t K = {200.0f, 200.0f, 80.0f, 60.0f};
+
+    /* 20 3D points in front of camera at depth 3-6m */
+    static const float pts3d[20][3] = {
+        {-1,-.5f,4}, {0,.3f,3}, {1,-.2f,5}, {-.5f,.5f,4}, {.8f,.2f,3},
+        {-.8f,-.4f,5}, {.3f,.6f,4}, {-.3f,-.3f,3}, {.6f,-.5f,5}, {0,0,4},
+        {1.2f,.3f,3}, {-.6f,.1f,6}, {.4f,-.7f,4}, {-.9f,.6f,5}, {.7f,.4f,4},
+        {-.1f,-.6f,3}, {.5f,.5f,6}, {-.7f,.2f,4}, {.2f,-.4f,3}, {-.4f,.7f,5}
+    };
+
+    /* Pose 1: identity. Pose 2: t = (+0.5, 0, 0) */
+    float tx = 0.5f;
+    vec2f_t px1[20], px2[20];
+    int i;
+    for (i = 0; i < 20; ++i) {
+        float X = pts3d[i][0], Y = pts3d[i][1], Z = pts3d[i][2];
+        px1[i].x = K.fx * X / Z + K.cx;
+        px1[i].y = K.fy * Y / Z + K.cy;
+        /* Cam2: translate X by -tx in world = X - tx in cam2 */
+        float X2 = X - tx;
+        px2[i].x = K.fx * X2 / Z + K.cx;
+        px2[i].y = K.fy * Y  / Z + K.cy;  /* Y unchanged */
+    }
+
+    levio_8pt_result_t res;
+    int ret = levio_ransac_8pt(px1, px2, 20, &K, &res);
+    EXPECT(ret == 0, "ransac_8pt succeeded");
+    EXPECT(res.valid, "ransac_8pt: valid pose");
+    EXPECT(res.n_inliers >= 10, "ransac_8pt: at least 10 inliers");
+    return 0;
+}
+
+/* --------------------------------------------------------------------------
+ * Test 10: EPnP + RANSAC
+ * -------------------------------------------------------------------------- */
+static int test_epnp_known_pose(void)
+{
+    levio_K_t K = {200.0f, 200.0f, 80.0f, 60.0f};
+
+    /* Known pose: R=I, t=(0.5, 0.1, 0.2) */
+    float Rcw[9] = {1,0,0, 0,1,0, 0,0,1};
+    vec3f_t tcw = {0.5f, 0.1f, 0.2f};
+
+    /* 12 3D points */
+    static const float pts3d[12][3] = {
+        {0,0,3}, {1,0,4}, {0,1,3}, {-1,0,5}, {0,-1,4}, {1,1,3},
+        {-1,1,4}, {1,-1,5}, {-1,-1,3}, {0.5f,0,4}, {0,0.5f,3}, {0.5f,0.5f,5}
+    };
+
+    vec3f_t Pw[12];
+    vec2f_t px[12];
+    int i;
+    for (i = 0; i < 12; ++i) {
+        Pw[i].x = pts3d[i][0]; Pw[i].y = pts3d[i][1]; Pw[i].z = pts3d[i][2];
+        /* Project: Pc = Rcw * Pw + tcw */
+        float X = Rcw[0]*Pw[i].x + Rcw[1]*Pw[i].y + Rcw[2]*Pw[i].z + tcw.x;
+        float Y = Rcw[3]*Pw[i].x + Rcw[4]*Pw[i].y + Rcw[5]*Pw[i].z + tcw.y;
+        float Z = Rcw[6]*Pw[i].x + Rcw[7]*Pw[i].y + Rcw[8]*Pw[i].z + tcw.z;
+        px[i].x = K.fx * X / Z + K.cx;
+        px[i].y = K.fy * Y / Z + K.cy;
+    }
+
+    levio_pnp_result_t res;
+    int ret = levio_epnp_ransac(Pw, px, 12, &K, &res);
+    EXPECT(ret == 0, "epnp_ransac succeeded");
+    EXPECT(res.valid, "epnp_ransac: valid pose");
+    EXPECT(res.n_inliers >= 6, "epnp_ransac: at least 6 inliers");
+    return 0;
+}
+
+/* --------------------------------------------------------------------------
  * Main
  * -------------------------------------------------------------------------- */
 int main(void)
@@ -343,6 +557,21 @@ int main(void)
     printf("Matcher:\n");
     RUN_TEST(test_match_self);
     RUN_TEST(test_match_no_match);
+
+    printf("SVD / Eigendecomposition:\n");
+    RUN_TEST(test_svd3_identity);
+    RUN_TEST(test_svd3_reconstruct);
+    RUN_TEST(test_sym_eig_3x3);
+
+    printf("Triangulation:\n");
+    RUN_TEST(test_triangulate_frontal);
+    RUN_TEST(test_triangulate_parallel_rays);
+
+    printf("RANSAC 8pt:\n");
+    RUN_TEST(test_ransac_8pt_known_motion);
+
+    printf("EPnP:\n");
+    RUN_TEST(test_epnp_known_pose);
 
     printf("\n=== Results: %d passed, %d failed ===\n", g_pass, g_fail);
     return (g_fail == 0) ? 0 : 1;

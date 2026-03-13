@@ -1,1 +1,0 @@
-/usr/bin/cc -g -Wl,--dependency-file=CMakeFiles/levio_euroc_demo.dir/link.d CMakeFiles/levio_euroc_demo.dir/apps/euroc_offline.c.o -o levio_euroc_demo  liblevio.a -lm

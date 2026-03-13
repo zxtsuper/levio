@@ -1,6 +1,0 @@
-/home/runner/work/levio/levio/levio_c/build/CMakeFiles/levio.dir
-/home/runner/work/levio/levio/levio_c/build/CMakeFiles/levio_euroc_demo.dir
-/home/runner/work/levio/levio/levio_c/build/CMakeFiles/levio_tests.dir
-/home/runner/work/levio/levio/levio_c/build/CMakeFiles/test.dir
-/home/runner/work/levio/levio/levio_c/build/CMakeFiles/edit_cache.dir
-/home/runner/work/levio/levio/levio_c/build/CMakeFiles/rebuild_cache.dir

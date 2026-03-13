@@ -70,16 +70,38 @@ void levio_preint_residual(const levio_preint_t *pi,
                             vec3f_t g_w,
                             float res[LEVIO_PREINT_DIM])
 {
-    /* Residual = [r_R; r_v; r_p] as in §3.3 error-state form.
+    /* Residual = [r_R; r_v; r_p] (9-vector) per Forster et al., TRO 2017.
      *
-     * TODO: implement the full residual using:
-     *   r_R = Log(ΔR^T * R_i^T * R_j)
-     *   r_v = R_i^T * (v_j - v_i - g*dt) - Δv
-     *   r_p = R_i^T * (p_j - p_i - v_i*dt - 0.5*g*dt²) - Δp
+     *   r_R = Log( ΔR^T * R_i^T * R_j )               (3)
+     *   r_v = R_i^T * (v_j - v_i - g_w * dt) - Δv     (3)
+     *   r_p = R_i^T * (p_j - p_i - v_i*dt             (3)
+     *                  - 0.5*g_w*dt^2) - Δp
      */
-    (void)pi; (void)s_i; (void)s_j; (void)g_w;
+    float dt = (float)pi->dt_sum;
+    float dt2 = 0.5f * dt * dt;
 
-    int i;
-    for (i = 0; i < LEVIO_PREINT_DIM; ++i)
-        res[i] = 0.0f;
+    mat3f_t Ri  = s_i->Rwb;   /* R_wb at i */
+    mat3f_t RiT = levio_mat3_transpose(Ri);
+    mat3f_t Rj  = s_j->Rwb;   /* R_wb at j */
+
+    /* r_R = Log( ΔR^T * R_i^T * R_j ) */
+    mat3f_t dRt  = levio_mat3_transpose(pi->dR);
+    mat3f_t RiTRj = levio_mat3_mul(RiT, Rj);
+    mat3f_t dRtRiTRj = levio_mat3_mul(dRt, RiTRj);
+    vec3f_t r_R  = levio_so3_log(dRtRiTRj);
+
+    /* r_v = R_i^T * (v_j - v_i - g_w*dt) - Δv */
+    vec3f_t dv_world = levio_vec3_sub(s_j->vwb, s_i->vwb);
+    dv_world = levio_vec3_sub(dv_world, levio_vec3_scale(g_w, dt));
+    vec3f_t r_v = levio_vec3_sub(levio_mat3_mul_vec3(RiT, dv_world), pi->dv);
+
+    /* r_p = R_i^T * (p_j - p_i - v_i*dt - 0.5*g_w*dt^2) - Δp */
+    vec3f_t dp_world = levio_vec3_sub(s_j->pwb, s_i->pwb);
+    dp_world = levio_vec3_sub(dp_world, levio_vec3_scale(s_i->vwb, dt));
+    dp_world = levio_vec3_sub(dp_world, levio_vec3_scale(g_w, dt2));
+    vec3f_t r_p = levio_vec3_sub(levio_mat3_mul_vec3(RiT, dp_world), pi->dp);
+
+    res[0] = r_R.x; res[1] = r_R.y; res[2] = r_R.z;
+    res[3] = r_v.x; res[4] = r_v.y; res[5] = r_v.z;
+    res[6] = r_p.x; res[7] = r_p.y; res[8] = r_p.z;
 }
