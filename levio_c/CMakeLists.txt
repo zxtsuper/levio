@@ -5,6 +5,8 @@ project(levio_c C)
 set(CMAKE_C_STANDARD 99)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
+find_package(ZLIB REQUIRED)
+
 # Compiler warnings (reasonable set for embedded-style C)
 if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
     add_compile_options(-Wall -Wextra -Wpedantic -Wno-unused-parameter)
@@ -44,15 +46,27 @@ target_link_libraries(levio PUBLIC m)
 # --------------------------------------------------------------------------
 # Example application: levio_euroc_demo
 # --------------------------------------------------------------------------
-add_executable(levio_euroc_demo apps/euroc_offline.c)
-target_link_libraries(levio_euroc_demo PRIVATE levio)
+add_executable(levio_euroc_demo
+    apps/euroc_offline.c
+    apps/euroc_dataset.c
+)
+target_include_directories(levio_euroc_demo PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/apps
+)
+target_link_libraries(levio_euroc_demo PRIVATE levio ZLIB::ZLIB)
 
 # --------------------------------------------------------------------------
 # Unit tests: levio_tests
 # --------------------------------------------------------------------------
 enable_testing()
 
-add_executable(levio_tests tests/test_levio.c)
-target_link_libraries(levio_tests PRIVATE levio)
+add_executable(levio_tests
+    tests/test_levio.c
+    apps/euroc_dataset.c
+)
+target_include_directories(levio_tests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/apps
+)
+target_link_libraries(levio_tests PRIVATE levio ZLIB::ZLIB)
 
 add_test(NAME levio_unit_tests COMMAND levio_tests)

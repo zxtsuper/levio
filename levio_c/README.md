@@ -85,7 +85,7 @@ All constants live in `include/levio_cfg.h` with inline section references:
 
 ## Build
 
-Requires: CMake ≥ 3.14, a C99 compiler, and `libm`.
+Requires: CMake ≥ 3.14, a C99 compiler, `libm`, and `zlib`.
 
 ```bash
 # From the repository root:
@@ -98,7 +98,7 @@ cd build && ctest -V
 ./build/levio_tests
 
 # Run the offline EuRoC demo:
-./build/levio_euroc_demo
+./build/levio_euroc_demo /path/to/MH_01_easy [max_frames]
 ```
 
 ---
