@@ -19,6 +19,7 @@
 #include <stdlib.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <limits.h>
 #include <unistd.h>
 
 #include <zlib.h>
@@ -322,7 +323,7 @@ static int test_match_no_match(void)
  * -------------------------------------------------------------------------- */
 static int test_mkdir_p(const char *path)
 {
-    if (mkdir(path, 0777) == 0 || errno == EEXIST)
+    if (mkdir(path, 0755) == 0 || errno == EEXIST)
         return 0;
     return -1;
 }
@@ -454,6 +455,7 @@ static int test_prepare_euroc_fixture(char *root, size_t root_size)
 {
     char mav0[512], imu0[512], cam0[512], cam_data[512];
     char imu_csv[512], cam_csv[512], image_path[512];
+    char template_buf[PATH_MAX];
     static const char imu_data[] =
         "#timestamp [ns],w_RS_S_x [rad s^-1],w_RS_S_y [rad s^-1],w_RS_S_z [rad s^-1],a_RS_S_x [m s^-2],a_RS_S_y [m s^-2],a_RS_S_z [m s^-2]\n"
         "1000000000,0.1,0.2,0.3,1.0,2.0,3.0\n"
@@ -468,10 +470,12 @@ static int test_prepare_euroc_fixture(char *root, size_t root_size)
         13, 14, 15, 16
     };
 
-    if (snprintf(root, root_size, "/tmp/levio_euroc_fixture_%ld",
-                 (long)getpid()) <= 0)
+    if (snprintf(template_buf, sizeof(template_buf),
+                 "/tmp/levio_euroc_fixture_XXXXXX") >= (int)sizeof(template_buf))
         return -1;
-    if (test_mkdir_p(root) != 0)
+    if (mkdtemp(template_buf) == NULL)
+        return -1;
+    if (snprintf(root, root_size, "%s", template_buf) >= (int)root_size)
         return -1;
 
     EXPECT(test_join_path(mav0, sizeof(mav0), root, "mav0") == 0,

@@ -1,6 +1,7 @@
 #include "euroc_dataset.h"
 
 #include <errno.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -24,6 +25,9 @@ static int join_path(char *dst, size_t dst_size,
 
 static int next_data_line(FILE *fp, char *line, size_t line_size)
 {
+    if (line_size > (size_t)INT_MAX)
+        return 0;
+
     while (fgets(line, (int)line_size, fp) != NULL) {
         if (line[0] == '#' || line[0] == '\n' || line[0] == '\r')
             continue;
@@ -254,12 +258,13 @@ static int decode_png_gray8(const uint8_t *png_data, size_t png_size,
             uint8_t up = (y > 0) ? pixels[(size_t)(y - 1) * row_bytes + x] : 0;
             uint8_t up_left = (x > 0 && y > 0)
                 ? pixels[(size_t)(y - 1) * row_bytes + x - 1u] : 0;
+            uint8_t avg = (uint8_t)(((int)left + (int)up) / 2);
 
             switch (filter) {
             case 0: dst[x] = src[x]; break;
             case 1: dst[x] = (uint8_t)(src[x] + left); break;
             case 2: dst[x] = (uint8_t)(src[x] + up); break;
-            case 3: dst[x] = (uint8_t)(src[x] + (uint8_t)(((int)left + (int)up) / 2)); break;
+            case 3: dst[x] = (uint8_t)(src[x] + avg); break;
             case 4: dst[x] = (uint8_t)(src[x] + paeth_predictor(left, up, up_left)); break;
             default: goto fail;
             }
@@ -287,9 +292,11 @@ int levio_euroc_load_image_gray(const char *path,
     FILE *fp;
     uint8_t *png_data = NULL;
     uint8_t *pixels = NULL;
+    int *x_map = NULL;
     long file_size;
     size_t read_size;
     int w = 0, h = 0;
+    int x;
     int y;
 
     if (path == NULL || dst == NULL || dst_w <= 0 || dst_h <= 0)
@@ -324,15 +331,23 @@ int levio_euroc_load_image_gray(const char *path,
     }
     free(png_data);
 
+    x_map = (int *)malloc((size_t)dst_w * sizeof(*x_map));
+    if (x_map == NULL) {
+        free(pixels);
+        return -1;
+    }
+
+    for (x = 0; x < dst_w; ++x)
+        x_map[x] = (int)((long long)x * w / dst_w);
+
     for (y = 0; y < dst_h; ++y) {
         int src_y = (int)((long long)y * h / dst_h);
-        int x;
         for (x = 0; x < dst_w; ++x) {
-            int src_x = (int)((long long)x * w / dst_w);
-            dst[y * dst_w + x] = pixels[src_y * w + src_x];
+            dst[y * dst_w + x] = pixels[src_y * w + x_map[x]];
         }
     }
 
+    free(x_map);
     free(pixels);
     if (src_w != NULL) *src_w = w;
     if (src_h != NULL) *src_h = h;

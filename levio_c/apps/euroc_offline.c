@@ -13,6 +13,8 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
+#include <errno.h>
+#include <limits.h>
 
 #include "levio.h"
 #include "euroc_dataset.h"
@@ -28,6 +30,7 @@ int main(int argc, char **argv)
 {
     const char *dataset_root;
     int max_frames = -1;
+    char *endptr = NULL;
     levio_euroc_imu_reader_t imu_reader;
     levio_euroc_cam_reader_t cam_reader;
     levio_euroc_imu_sample_t imu_sample;
@@ -44,8 +47,17 @@ int main(int argc, char **argv)
     }
 
     dataset_root = argv[1];
-    if (argc >= 3)
-        max_frames = atoi(argv[2]);
+    if (argc >= 3) {
+        long parsed_frames;
+        errno = 0;
+        parsed_frames = strtol(argv[2], &endptr, 10);
+        if (errno != 0 || endptr == argv[2] || *endptr != '\0' ||
+            parsed_frames <= 0 || parsed_frames > INT_MAX) {
+            fprintf(stderr, "Invalid max_frames value: %s\n", argv[2]);
+            return 1;
+        }
+        max_frames = (int)parsed_frames;
+    }
 
     printf("LEVIO EuRoC offline demo\n");
     printf("  Dataset root       : %s\n", dataset_root);
