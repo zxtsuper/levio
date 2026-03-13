@@ -5,6 +5,21 @@ project(levio_c C)
 set(CMAKE_C_STANDARD 99)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
+# --------------------------------------------------------------------------
+# Target selection
+# --------------------------------------------------------------------------
+# Set LEVIO_TARGET=GAP9 to build a GAP9/PMSIS flavour of levio_c.
+# Alternatively, configure the gap9/ subdirectory directly with the GAP9
+# CMake toolchain (see cmake/toolchains/gap9-pmsis.cmake).
+set(LEVIO_TARGET "DESKTOP" CACHE STRING
+    "Target platform: DESKTOP (default) or GAP9")
+set_property(CACHE LEVIO_TARGET PROPERTY STRINGS DESKTOP GAP9)
+
+# --------------------------------------------------------------------------
+# Cluster-parallel option (applies to both DESKTOP sim and GAP9)
+# --------------------------------------------------------------------------
+option(LEVIO_USE_CLUSTER "Enable GAP9 cluster parallel kernels (or desktop sim)" OFF)
+
 # Compiler warnings (reasonable set for embedded-style C)
 if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
     add_compile_options(-Wall -Wextra -Wpedantic -Wno-unused-parameter)
@@ -41,18 +56,30 @@ target_include_directories(levio PUBLIC
 
 target_link_libraries(levio PUBLIC m)
 
-# --------------------------------------------------------------------------
-# Example application: levio_euroc_demo
-# --------------------------------------------------------------------------
-add_executable(levio_euroc_demo apps/euroc_offline.c)
-target_link_libraries(levio_euroc_demo PRIVATE levio)
+if(LEVIO_USE_CLUSTER)
+    target_compile_definitions(levio PUBLIC LEVIO_USE_GAP9_CLUSTER=1)
+endif()
 
 # --------------------------------------------------------------------------
-# Unit tests: levio_tests
+# GAP9 target: delegate to gap9/ subdirectory
 # --------------------------------------------------------------------------
-enable_testing()
+if(LEVIO_TARGET STREQUAL "GAP9")
+    message(STATUS "LEVIO_TARGET=GAP9: including gap9/ subdirectory")
+    add_subdirectory(gap9)
+else()
+    # --------------------------------------------------------------------------
+    # Desktop builds only
+    # --------------------------------------------------------------------------
 
-add_executable(levio_tests tests/test_levio.c)
-target_link_libraries(levio_tests PRIVATE levio)
+    # Example application: levio_euroc_demo
+    add_executable(levio_euroc_demo apps/euroc_offline.c)
+    target_link_libraries(levio_euroc_demo PRIVATE levio)
 
-add_test(NAME levio_unit_tests COMMAND levio_tests)
+    # Unit tests: levio_tests
+    enable_testing()
+
+    add_executable(levio_tests tests/test_levio.c)
+    target_link_libraries(levio_tests PRIVATE levio)
+
+    add_test(NAME levio_unit_tests COMMAND levio_tests)
+endif()

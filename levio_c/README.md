@@ -1,8 +1,8 @@
-# levio_c — Embedded-C Skeleton for LEVIO
+# levio_c — Embedded-C Implementation of LEVIO
 
-This directory contains an initial **embedded-C** implementation skeleton for
-the LEVIO visual-inertial odometry system, targeting the **GAP9 SoC** by
-GreenWaves Technologies.
+This directory contains the **embedded-C** implementation of the LEVIO
+visual-inertial odometry system, targeting the **GAP9 SoC** by GreenWaves
+Technologies with PMSIS cluster parallel execution.
 
 The code maps to the algorithm described in:
 
@@ -13,10 +13,8 @@ The code maps to the algorithm described in:
 
 ## Status
 
-**Skeleton / work-in-progress.**  The components listed below compile cleanly,
-pass unit tests on desktop, and match all paper-defined default values.
-Math-heavy internals (SVD, EPnP solver, Schur complement) are structurally
-complete stubs that return `−1` and contain detailed `TODO` comments.
+All major algorithms are **implemented** (not stubs).  The following
+table summarises what is complete and what is ongoing.
 
 ---
 
@@ -24,48 +22,44 @@ complete stubs that return `−1` and contain detailed `TODO` comments.
 
 ### §3.2 — Visual Odometry front-end
 
-Six pipeline segments, each with a header and implementation:
-
-| Segment | Paper description | Module |
-|---------|------------------|--------|
-| 1 | ORB extraction (up to 700 descriptors per frame) | `levio_orb.{h,c}` |
-| 2 | Bidirectional brute-force matching (Hamming distance) | `levio_match.{h,c}` |
-| 3 | 8-point algorithm + RANSAC (fallback when < 25 world matches) | `levio_ransac_8pt.{h,c}` |
-| 4 | EPnP + RANSAC (primary 2D-3D pose estimation) | `levio_pnp_epnp.{h,c}` |
-| 5 | Keyframe selection (parallax threshold 15 px) | `levio_frontend.{h,c}` |
-| 6 | Triangulation of new world points (DLT, up to 1000 landmarks) | `levio_triangulate.{h,c}` |
-
-The fallback rule (< 25 world-point matches → 8-point algorithm) is
-implemented in `levio_frontend_process()`.
+| Segment | Paper description | Module | Status |
+|---------|------------------|--------|--------|
+| 1 | ORB extraction (Oriented FAST + Rotated BRIEF) | `levio_orb.{h,c}` | ✅ |
+| 2 | Bidirectional brute-force matching (Hamming) | `levio_match.{h,c}` | ✅ |
+| 3 | 8-point algorithm + RANSAC (normalised; Sampson distance) | `levio_ransac_8pt.{h,c}` | ✅ |
+| 4 | Iterative GN-based PnP + RANSAC (4-point minimal solver) | `levio_pnp_epnp.{h,c}` | ✅ |
+| 5 | Keyframe selection (parallax threshold 15 px) | `levio_frontend.{h,c}` | ✅ |
+| 6 | Two-view triangulation (midpoint method) | `levio_triangulate.{h,c}` | ✅ |
 
 ### §3.3 — Tight-coupled BA + IMU
 
-| Component | Module |
-|-----------|--------|
-| IMU ring buffer (FIFO, 256 samples) | `levio_ringbuf.{h,c}` |
-| Pre-integration, equations (2)–(4) | `levio_imu_preint.{h,c}` |
-| Visual reprojection factor + Jacobians | `levio_factors.{h,c}`, `levio_camera.{h,c}` |
-| IMU pre-integration factor | `levio_factors.{h,c}` |
-| Prior / marginalisation factor | `levio_factors.{h,c}` |
-| Sliding window back-end (10 keyframes) | `levio_backend.{h,c}` |
-| LM optimiser + Schur complement (eq. 5–6) stub | `levio_backend.c` |
+| Component | Module | Status |
+|-----------|--------|--------|
+| IMU ring buffer (FIFO, 256 samples) | `levio_ringbuf.{h,c}` | ✅ |
+| Pre-integration, equations (2)–(4) | `levio_imu_preint.{h,c}` | ✅ |
+| IMU residual r_R / r_v / r_p | `levio_imu_preint.c` | ✅ |
+| Visual reprojection factor + Jacobians | `levio_factors.{h,c}` | ✅ |
+| Sliding window LM optimizer + Schur complement (eq. 5–6) | `levio_backend.c` | ✅ |
+| Marginalisation (simplified drop) | `levio_backend.c` | ✅ basic |
 
 ### §3.4 — Embedded optimisations (GAP9 target)
 
 | Optimisation | Status |
 |-------------|--------|
 | Image resolution QQVGA 160×120 | ✅ `LEVIO_IMG_W/H` in `levio_cfg.h` |
-| Self-contained C, no heap allocation | ✅ all structures statically allocated |
+| Self-contained C99, no heap allocation | ✅ all structures statically allocated |
 | Custom linear-algebra library | ✅ `levio_math.{h,c}`, `levio_se3.{h,c}` |
-| Schur complement for reduced system | 🔧 stub in `levio_backend.c` |
-| Parallel cluster execution (GAP9) | ❌ not yet (add `pi_cluster_*` calls) |
+| Jacobi SVD (3×3) + symmetric eigensolver (up to 12×12) | ✅ |
+| Schur complement for reduced system + Cholesky solve | ✅ |
+| **Parallel cluster matching (GAP9 PE cores)** | ✅ `gap9/kernels/levio_kernels.{c,h}` |
+| **Parallel RANSAC inlier counting (GAP9 PE cores)** | ✅ `gap9/kernels/levio_kernels.{c,h}` |
 | Tiered L1/L2 memory usage | ❌ not yet |
 
 ---
 
 ## Default values (paper-aligned)
 
-All constants live in `include/levio_cfg.h` with inline section references:
+All constants live in `include/levio_cfg.h`:
 
 | Constant | Value | Paper reference |
 |----------|-------|-----------------|
@@ -75,15 +69,12 @@ All constants live in `include/levio_cfg.h` with inline section references:
 | `LEVIO_PNP_MIN_INLIERS` | 25 | §3.2 |
 | `LEVIO_WINDOW_SIZE` | 10 | §3.3 Table I |
 | `LEVIO_KF_PARALLAX_PX` | 15.0 px | §3.2 |
-| `LEVIO_IMU_BUF_SIZE` | 256 | derived (200 Hz / 5 Hz × 2) |
-
-> **Note:** `LEVIO_WINDOW_SIZE` and `LEVIO_KF_PARALLAX_PX` are set to typical
-> values consistent with the paper's description.  Verify these against Table I
-> in arXiv:2602.03294v1 §3.3 once you have access to the full paper PDF.
+| `LEVIO_RANSAC_MAX_ITER` | 100 | §3.2 |
+| `LEVIO_RANSAC_REPROJ_THR` | 2.0 px | §3.2 |
 
 ---
 
-## Build
+## Desktop build
 
 Requires: CMake ≥ 3.14, a C99 compiler, and `libm`.
 
@@ -92,7 +83,7 @@ Requires: CMake ≥ 3.14, a C99 compiler, and `libm`.
 cmake -S levio_c -B build
 cmake --build build
 
-# Run unit tests:
+# Run unit tests (23 tests):
 cd build && ctest -V
 # or directly:
 ./build/levio_tests
@@ -103,31 +94,132 @@ cd build && ctest -V
 
 ---
 
+## GAP9 / PMSIS build
+
+### Prerequisites
+
+1. Install the [GAP SDK](https://github.com/GreenWaves-Technologies/gap_sdk)
+   and set `GAP_SDK_HOME`:
+
+   ```bash
+   source <gap_sdk_root>/configs/gap9_evk.sh
+   export GAP_SDK_HOME=$(dirname $(which riscv32-unknown-elf-gcc))/../..
+   ```
+
+2. Verify the toolchain is on `PATH`:
+
+   ```bash
+   riscv32-unknown-elf-gcc --version
+   ```
+
+### Cross-compile for GAP9 board
+
+```bash
+mkdir build_gap9 && cd build_gap9
+cmake -DCMAKE_TOOLCHAIN_FILE=../cmake/toolchains/gap9-pmsis.cmake \
+      -DGAP_SDK_HOME=$GAP_SDK_HOME \
+      -DLEVIO_USE_CLUSTER=ON \
+      -DCMAKE_BUILD_TYPE=Release \
+      ../levio_c/gap9
+make -j4
+```
+
+This produces `levio_gap9_demo`.
+
+### Run on board
+
+```bash
+# Connect the GAP9 EVK board, then:
+gapy --target=gap9_evk --exec-prepare --exec run
+```
+
+### Run on GVSOC simulator
+
+```bash
+gapy --target=gap9 --exec-prepare --exec run
+```
+
+### Desktop simulation (no GAP SDK required)
+
+Use the fallback build to verify pipeline logic on a PC:
+
+```bash
+mkdir build_gap9_sim && cd build_gap9_sim
+cmake -DLEVIO_USE_CLUSTER=OFF -DCMAKE_BUILD_TYPE=Debug \
+      ../levio_c/gap9
+make && ./levio_gap9_demo
+```
+
+---
+
+## GAP9 FC / PE architecture
+
+```
+GAP9 SoC
+├── Fabric Controller (FC) — single core, runs:
+│   ├── levio_push_imu()          IMU ring buffer ingestion
+│   ├── levio_orb_extract()        FAST corner detection + Rotated BRIEF
+│   ├── levio_frontend_process()   Pose estimation (PnP / 8pt)
+│   ├── levio_backend_optimize()   LM + Schur complement
+│   └── levio_gap9_main()          Main loop / keyframe logic
+│
+└── Cluster (8 × PE cores) — spawned by FC via pi_cluster_send_task_to_cl()
+    ├── levio_cl_match_kernel()    Parallel Hamming-distance descriptor matching
+    │   └── Each PE handles a stripe of feats_a; ratio-test filtering
+    └── levio_cl_inlier_kernel()   Parallel RANSAC inlier counting
+        └── Each PE evaluates stride subset of point correspondences
+```
+
+### Enabling / disabling cluster parallelism
+
+| CMake option | Effect |
+|---|---|
+| `-DLEVIO_USE_CLUSTER=ON` | Defines `LEVIO_USE_GAP9_CLUSTER=1`; uses `pi_cl_team_fork` |
+| `-DLEVIO_USE_CLUSTER=OFF` (default) | Single-threaded fallback; cluster calls become no-ops |
+
+The fallback is transparent: `levio_cl_match_ratio_fork()` and
+`levio_cl_inlier_count_fork()` call the kernel function directly without
+forking.  All desktop unit tests pass in either mode.
+
+---
+
 ## Directory layout
 
 ```
 levio_c/
-├── CMakeLists.txt           # Builds static library + demo + tests
+├── CMakeLists.txt           # Desktop build; LEVIO_TARGET=GAP9 delegates to gap9/
 ├── README.md                # This file
-├── include/
+├── include/                 # All API headers
 │   ├── levio_cfg.h          # Paper-aligned compile-time constants
-│   ├── levio_types.h        # Core data types (vec3, mat3, features, ...)
-│   ├── levio_math.h         # Custom linear algebra (mat3, Cholesky, ...)
+│   ├── levio_math.h         # Linear algebra: mat3, SVD, Jacobi eigensolver
 │   ├── levio_se3.h          # SO3 / SE3 Lie-group helpers
-│   ├── levio_ringbuf.h      # IMU ring buffer
-│   ├── levio_camera.h       # Pinhole projection / Jacobians
-│   ├── levio_orb.h          # ORB extraction API + Hamming distance
-│   ├── levio_match.h        # Bidirectional brute-force matcher
-│   ├── levio_ransac_8pt.h   # 8-point essential + RANSAC (§3.2 segment 3)
-│   ├── levio_pnp_epnp.h     # EPnP + RANSAC (§3.2 segment 4)
-│   ├── levio_triangulate.h  # Two-view DLT triangulation (§3.2 segment 6)
-│   ├── levio_frontend.h     # Front-end orchestrator (§3.2)
-│   ├── levio_imu_preint.h   # IMU pre-integration eq. (2)–(4) (§3.3)
-│   ├── levio_factors.h      # Visual / IMU / prior factors (§3.3)
-│   ├── levio_backend.h      # Sliding-window BA + LM + Schur (§3.3)
-│   └── levio.h              # Top-level API: push_imu / push_image
-├── src/                     # Corresponding .c files
+│   ├── levio_orb.h          # ORB extraction + Hamming distance
+│   ├── levio_ransac_8pt.h   # 8-point essential + RANSAC
+│   ├── levio_pnp_epnp.h     # Iterative PnP + RANSAC
+│   ├── levio_triangulate.h  # Midpoint triangulation
+│   ├── levio_imu_preint.h   # IMU pre-integration + residual
+│   ├── levio_factors.h      # Visual / IMU / prior factors
+│   ├── levio_backend.h      # Sliding-window LM optimizer
+│   └── levio.h              # Top-level API
+├── src/                     # Implementation files
 ├── apps/
+│   └── euroc_offline.c      # EuRoC MH01 offline demo
+├── tests/
+│   └── test_levio.c         # 23 unit tests (all pass)
+└── gap9/                    # GAP9 / PMSIS target
+    ├── CMakeLists.txt        # GAP9 standalone build entry
+    ├── main.c                # FC entry: cluster open, pipeline loop
+    └── kernels/
+        ├── levio_kernels.h   # PE kernel API declarations
+        └── levio_kernels.c   # Parallel matching + RANSAC inlier count
+```
+
+Also:
+```
+cmake/
+└── toolchains/
+    └── gap9-pmsis.cmake      # CMake toolchain for GAP9 cross-compilation
+```
 │   └── euroc_offline.c      # Desktop demo wiring up push_imu / push_image
 └── tests/
     └── test_levio.c         # 16 unit tests (Hamming, ringbuf, math, SE3, ...)

@@ -14,6 +14,7 @@
 #define LEVIO_MATH_H
 
 #include <stddef.h>
+#include <stdint.h>
 #include "levio_types.h"
 
 #ifdef __cplusplus
@@ -93,6 +94,56 @@ void levio_matmul(const float *A, const float *B, float *C, int m, int k, int n)
  * @brief Add scaled matrix: C += s * A.
  */
 void levio_matadd_scaled(float *C, const float *A, float s, int m, int n);
+
+/* --------------------------------------------------------------------------
+ * Symmetric eigendecomposition (Jacobi) – max dimension 12
+ * -------------------------------------------------------------------------- */
+
+/** Maximum matrix dimension supported by levio_sym_eig(). */
+#define LEVIO_MAX_EIG_DIM 12
+
+/**
+ * @brief Jacobi cyclic eigendecomposition of a real symmetric n×n matrix.
+ *
+ * On entry  A holds the upper/lower symmetric matrix.
+ * On exit   A holds eigenvalues on the diagonal (off-diagonal is zeroed).
+ *           V holds the eigenvectors as columns (V is orthogonal).
+ *
+ * @param A   n×n symmetric matrix (row-major, overwritten).
+ * @param V   n×n output eigenvector matrix (row-major).
+ * @param n   matrix dimension (n <= LEVIO_MAX_EIG_DIM).
+ * @return    0 on success, -1 if n > LEVIO_MAX_EIG_DIM.
+ */
+int levio_sym_eig(float *A, float *V, int n);
+
+/* --------------------------------------------------------------------------
+ * 3×3 Singular Value Decomposition
+ * -------------------------------------------------------------------------- */
+
+/**
+ * @brief SVD of a 3×3 matrix: A = U * diag(s) * Vt.
+ *
+ * Singular values s[0] >= s[1] >= s[2] >= 0 (sorted descending).
+ * U and Vt are orthogonal (det may be -1; caller must handle sign if needed).
+ *
+ * @param A   Input 3×3 matrix (row-major, not modified).
+ * @param U   Output 3×3 left singular vector matrix (row-major).
+ * @param s   Output 3 singular values (sorted descending).
+ * @param Vt  Output 3×3 right singular vector matrix transposed (row-major).
+ */
+void levio_svd3(const float A[9], float U[9], float s[3], float Vt[9]);
+
+/* --------------------------------------------------------------------------
+ * Simple LCG pseudo-random (for RANSAC)
+ * -------------------------------------------------------------------------- */
+
+/**
+ * @brief Linear congruential generator step.
+ *
+ * @param state  LCG state (updated in place).
+ * @return       Next pseudo-random uint32.
+ */
+uint32_t levio_rand_next(uint32_t *state);
 
 #ifdef __cplusplus
 }
